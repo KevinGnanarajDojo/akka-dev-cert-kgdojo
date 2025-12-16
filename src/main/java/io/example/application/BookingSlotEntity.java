@@ -55,8 +55,10 @@ public class BookingSlotEntity extends EventSourcedEntity<Timeslot, BookingEvent
 
     @Override
     public Timeslot applyEvent(BookingEvent event) {
-        // Supply your own implementation to update state based
-        // on the event
+        System.out.println("Applying event " + event);
+        return switch(event){
+            case BookingEvent.ParticipantBooked e -> currentState().markSlotAvailable(e.participantId());
+        }
         return currentState();
     }
 

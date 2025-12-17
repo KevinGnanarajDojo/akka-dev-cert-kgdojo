@@ -1,96 +1,137 @@
 package io.example.application;
 
-import akka.javasdk.annotations.FunctionTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class GoogleWeatherService {
 
     private final HttpClient client;
 
-    // Constructor Injection: Allows us to pass a Mock client in tests
-    // or use a real one in production.
     public GoogleWeatherService(HttpClient client) {
         this.client = client;
     }
 
-    // Default constructor for normal use
     public GoogleWeatherService() {
         this(HttpClient.newHttpClient());
     }
 
-    @FunctionTool(description = "Queries the weather conditions...")
-    public String getWeatherForecast(String timeSlotId) {
-        // Logic to parse timeSlotId would go here
-        // For now, we simulate the logic:
-        LocalDate targetDate = LocalDate.now().plusDays(10);
+    public String getWeatherForecast(LocalDateTime dateTime) {
+        if (dateTime.isBefore(LocalDateTime.now())) {
+            return "Requested date/time is in the past. Historical weather data is not available.";
+        }
+        if (dateTime.isAfter(LocalDateTime.now().plusDays(9))) {
+            return "Requested date/time is too far in the future. Only a 10-day forecast is available.";
+        }
 
-        // Note: In a real app, pass the API key in via constructor too
         String apiKey = System.getenv("GOOGLE_API_KEY");
         double lat = 51.7509;
         double lon = 0.3398;
+        int hours = 240;
 
-        String url = String.format(
-                "https://weather.googleapis.com/v1/forecast/days:lookup?location.latitude=%f&location.longitude=%f&days=10&key=%s",
-                lat, lon, apiKey
-        );
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .GET()
-                .build();
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> allForecasts = new ArrayList<>();
+        String pageToken = null;
 
         try {
-            // Use the class-level client
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            do {
+                String url = String.format(Locale.US,
+                        "https://weather.googleapis.com/v1/forecast/hours:lookup?key=%s&location.latitude=%f&location.longitude=%f&hours=%d",
+                        apiKey, lat, lon, hours);
+                if (pageToken != null) {
+                    url += "&pageToken=" + pageToken;
+                }
 
-            if (response.statusCode() == 200) {
-                return findWeatherForDate(response.body(), targetDate);
-            } else {
-                return "Error: API returned status " + response.statusCode();
-            }
+                HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                String responseBody = response.body();
+
+                if (response.statusCode() == 200) {
+                    if (responseBody == null || responseBody.trim().isEmpty()) {
+                        return "Error: API returned 200 OK but with an empty response body.";
+                    }
+                    JsonNode root = mapper.readTree(responseBody);
+                    JsonNode hourlyForecasts = root.path("forecastHours");
+                    if (hourlyForecasts.isArray()) {
+                        for (JsonNode forecast : hourlyForecasts) {
+                            allForecasts.add(forecast);
+                        }
+                    }
+
+                    JsonNode tokenNode = root.path("nextPageToken");
+                    if (tokenNode.isMissingNode() || tokenNode.isNull() || tokenNode.asText().isEmpty()) {
+                        pageToken = null;
+                    } else {
+                        pageToken = tokenNode.asText();
+                    }
+                } else {
+                    return "Error: API returned status " + response.statusCode() + " Body: " + responseBody;
+                }
+            } while (pageToken != null);
+
+            // Combine all pages into a single JSON structure to pass to the find method
+            ObjectNode combinedRoot = mapper.createObjectNode();
+            ArrayNode combinedForecasts = mapper.createArrayNode();
+            combinedForecasts.addAll(allForecasts);
+            combinedRoot.set("forecastHours", combinedForecasts);
+            String combinedJson = mapper.writeValueAsString(combinedRoot);
+
+            return findWeatherForDateTime(combinedJson, dateTime);
+
         } catch (Exception e) {
             e.printStackTrace();
             return "Error: Failed to fetch weather";
         }
     }
 
-    // Changed return type from void to String
-    private String findWeatherForDate(String jsonResponse, LocalDate target) {
+    private String findWeatherForDateTime(String jsonResponse, LocalDateTime target) {
         try {
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(jsonResponse);
-            JsonNode forecastList = root.path("forecastDays");
+            JsonNode hourlyForecasts = root.path("forecastHours");
 
-            for (JsonNode day : forecastList) {
-                String startTime = day.path("interval").path("startTime").asText();
-                // Handle potential parsing errors safely
-                LocalDate forecastDate = LocalDate.parse(startTime, DateTimeFormatter.ISO_DATE_TIME);
+            for (JsonNode forecast : hourlyForecasts) {
+                String dateTimeStr = forecast.path("interval").path("startTime").asText();
+                ZonedDateTime forecastDateTime = ZonedDateTime.parse(dateTimeStr, DateTimeFormatter.ISO_ZONED_DATE_TIME);
 
-                if (forecastDate.equals(target)) {
-                    return getDaySummary(day);
+                if (forecastDateTime.getYear() == target.getYear() &&
+                    forecastDateTime.getMonthValue() == target.getMonthValue() &&
+                    forecastDateTime.getDayOfMonth() == target.getDayOfMonth() &&
+                    forecastDateTime.getHour() == target.getHour()) {
+                    return getHourSummary(forecast);
                 }
             }
-            return "Date " + target + " is outside the available 10-day forecast window.";
+            return "Date " + target + " is outside the available forecast window.";
         } catch (Exception e) {
+            e.printStackTrace();
             return "Failed to parse JSON: " + e.getMessage();
         }
     }
 
-    private String getDaySummary(JsonNode day) {
-        String condition = day.path("daytimeForecast").path("weatherCondition").path("description").asText();
-        int highTemp = (int) Math.round(day.path("maxTemperature").path("value").asDouble());
-        int lowTemp = (int) Math.round(day.path("minTemperature").path("value").asDouble());
-        int rainChance = day.path("daytimeForecast").path("precipitation").path("probability").asInt();
+    private String getHourSummary(JsonNode hour) {
+        String condition = hour.path("weatherCondition").path("description").path("text").asText();
+        int temp = (int) Math.round(hour.path("temperature").path("degrees").asDouble());
+        int rainChance = hour.path("precipitation").path("probability").path("percent").asInt();
+        int thunderstormChance = hour.path("thunderstormProbability").asInt();
+        int windSpeed = (int) Math.round(hour.path("wind").path("speed").path("value").asDouble());
 
-        return String.format("%s, High: %d°C, Low: %d°C, Rain: %d%%",
-                condition, highTemp, lowTemp, rainChance);
+
+        return condition +
+                ", Temp: " + temp + "°C" +
+                ", Rain: " + rainChance + "%" +
+                ", Thunder: " + thunderstormChance + "%" +
+                ", Wind: " + windSpeed + " km/h";
     }
 }

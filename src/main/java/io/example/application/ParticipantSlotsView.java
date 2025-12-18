@@ -41,6 +41,7 @@ public class ParticipantSlotsView extends View {
     public record SlotList(List<SlotRow> slots) {
     }
 
+    /*
     // @Query("SELECT .... ")
     public QueryEffect<SlotList> getSlotsByParticipant(String participantId) {
         return queryResult();
@@ -50,4 +51,5 @@ public class ParticipantSlotsView extends View {
     public QueryEffect<SlotList> getSlotsByParticipantAndStatus(ParticipantStatusInput input) {
         return queryResult();
     }
+    */
 }

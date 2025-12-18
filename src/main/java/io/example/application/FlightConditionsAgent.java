@@ -25,7 +25,7 @@ import java.time.format.DateTimeFormatter;
 @Component(id = "flight-conditions-agent")
 public class FlightConditionsAgent extends Agent {
 
-    record ConditionsReport(String timeSlotId, Boolean meetsRequirements) {
+    public record ConditionsReport(String timeSlotId, Boolean meetsRequirements) {
     }
 
     private static final String SYSTEM_MESSAGE = """
@@ -44,6 +44,18 @@ public class FlightConditionsAgent extends Agent {
             - Set 'meetsRequirements' to 'false' if any of the criteria are not met.
             - The 'timeSlotId' in the report must match the one provided in the user message.
             """.stripIndent();
+
+    private final GoogleWeatherService weatherService;
+
+    public FlightConditionsAgent() {
+        this.weatherService = new GoogleWeatherService();
+    }
+
+
+
+    FlightConditionsAgent(GoogleWeatherService weatherService) {
+        this.weatherService = weatherService;
+    }
 
     public Effect<ConditionsReport> query(String timeSlotId) {
         return effects()
@@ -66,7 +78,6 @@ public class FlightConditionsAgent extends Agent {
         try {
             // The timeSlotId is expected to be in ISO_LOCAL_DATE_TIME format (e.g., "2025-12-25T10:00:00")
             LocalDateTime dateTime = LocalDateTime.parse(timeSlotId, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-            GoogleWeatherService weatherService = new GoogleWeatherService();
             return weatherService.getWeatherForecast(dateTime);
         } catch (Exception e) {
             e.printStackTrace();
